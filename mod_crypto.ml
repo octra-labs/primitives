@@ -1,6 +1,11 @@
 open Random
 open Printf
 
+(* Helper function to enable option chaining *)
+let ( >>= ) option f = match option with
+  | Some x -> f x
+  | None -> None
+
 module type NODE = sig
   type t
   val make : int -> t
@@ -93,30 +98,64 @@ module Encrypt (G : GRAPH with type node = Node.t) = struct
     let apply_encoding c round_idx char_idx =
       let key_char = secret_arr.((char_idx + round_idx) mod secret_len) in
       let idx = (Char.code c + round_idx + char_idx) mod node_count in
-      List.nth_opt node_ids idx
-      |> Option.map (G.find graph)
-      |> Option.join
-      |> Option.map (fun node -> 
+      List.nth_opt node_ids idx >>= (fun id -> G.find graph id)
+      |> Option.map (fun node ->
           let wt = Node.weight node in
           let sum = Node.state_sum node +. wt in
-          (Char.code c) lxor (Char.code key_char) lxor (int_of_float sum land 0xFF)
-        )
-      |> Option.value ~default:(Char.code c)
-      |> Char.chr
+          let result = (Char.code c) lxor (Char.code key_char) lxor (int_of_float sum land 0xFF) in
+          Printf.printf "Encoding char '%c' using node %d: wt=%.2f sum=%.2f result=%c\n" c idx wt sum (Char.chr result);
+          Char.chr result)
+      |> Option.value ~default:c
     in
 
     let map_with_index f seq =
       fst (Seq.fold_left (fun (acc, idx) c -> (Seq.append acc (Seq.return (f c idx)), idx + 1)) (Seq.empty, 0) seq)
     in
 
-    List.init rounds (fun round_idx -> 
-        data 
-        |> String.to_seq 
+    List.init rounds (fun round_idx ->
+        data
+        |> String.to_seq
         |> map_with_index (fun c char_idx -> apply_encoding c round_idx char_idx)
         |> List.of_seq
       )
     |> List.flatten
     |> List.fold_left (fun acc c -> acc ^ sprintf "%02x" (Char.code c)) ""
+
+  let decode rounds encoded_data graph secret =
+    let secret_arr = Array.of_list (List.init (String.length secret) (String.get secret)) in
+    let node_ids = G.ids graph in
+    let node_count = List.length node_ids in
+    let secret_len = Array.length secret_arr in
+
+    let chars = List.init (String.length encoded_data / 2) (fun i ->
+        int_of_string ("0x" ^ String.sub encoded_data (2 * i) 2)
+      ) in
+
+    let apply_decoding code round_idx char_idx =
+      let key_char = secret_arr.((char_idx + round_idx) mod secret_len) in
+      let idx = (Char.code (Char.chr code) + round_idx + char_idx) mod node_count in
+      List.nth_opt node_ids idx >>= (fun id -> G.find graph id)
+      |> Option.map (fun node ->
+          let wt = Node.weight node in
+          let sum = Node.state_sum node +. wt in
+          let result = (code lxor (Char.code key_char) lxor (int_of_float sum land 0xFF)) in
+          Printf.printf "Decoding code %02x using node %d: wt=%.2f sum=%.2f result=%c\n" code idx wt sum (Char.chr result);
+          Char.chr result)
+      |> Option.value ~default:(Char.chr code)
+    in
+
+    let map_with_index f seq =
+      fst (Seq.fold_left (fun (acc, idx) c -> (Seq.append acc (Seq.return (f c idx)), idx + 1)) (Seq.empty, 0) seq)
+    in
+
+    List.init rounds (fun round_idx ->
+        chars
+        |> List.to_seq
+        |> map_with_index (fun c char_idx -> apply_decoding c round_idx char_idx)
+        |> List.of_seq
+      )
+    |> List.flatten
+    |> List.fold_left (fun acc c -> acc ^ String.make 1 c) ""
 end
 
 module GM = GraphModule(Node)
@@ -128,4 +167,6 @@ let () =
   let iters = 3 in
   let g = GM.init 50 20 in
   let encoded = Enc.encode iters data g secret in
-  printf "Encoded: %s\n" encoded
+  Printf.printf "Encoded: %s\n" encoded;
+  let decoded = Enc.decode iters encoded g secret in
+  Printf.printf "Decoded: %s\n" decoded
