@@ -1,5 +1,4 @@
 open Printf
-
 let ( >>= ) option f = match option with
   | Some x -> f x
   | None -> None
