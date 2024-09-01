@@ -1,7 +1,6 @@
 open Random
 open Printf
 
-(* Helper function to enable option chaining (f? also check...) *)
 let ( >>= ) option f = match option with
   | Some x -> f x
   | None -> None
@@ -22,7 +21,7 @@ module Node : NODE = struct
     state : float array array;
     links : (int * float) list;
   }
-  (* Check List!!!! *)
+  
   let make id =
     let attrs = List.init (Random.int 10) (fun i -> ("Attr" ^ string_of_int i, Random.float 100.0)) in
     let state = Array.init 4 (fun _ -> Array.init 4 (fun _ -> Random.float 1.0)) in
@@ -168,6 +167,5 @@ let () =
   let g = GM.init 50 20 in
   let encoded = Enc.encode iters data g secret in
   Printf.printf "Encoded: %s\n" encoded;
-  (* Decode -0x + N (???) *)
   let decoded = Enc.decode iters encoded g secret in
   Printf.printf "Decoded: %s\n" decoded
