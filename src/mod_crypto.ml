@@ -1,4 +1,3 @@
-open Random
 open Printf
 
 let ( >>= ) option f = match option with
@@ -31,7 +30,7 @@ module Node : NODE = struct
   let weight n = List.fold_left (fun acc (_, w) -> max acc w) 0.0 n.links
 
   let state_sum n = Array.fold_left (fun acc row -> acc +. Array.fold_left (+.) 0.0 row) 0.0 n.state
-
+  
   let combine n1 n2 = 
     { id = n1.id + n2.id;  
       attrs = n1.attrs @ n2.attrs;
