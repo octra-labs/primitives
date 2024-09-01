@@ -158,13 +158,3 @@ end
 
 module GM = GraphModule(Node)
 module Enc = Encrypt(GM)
-
-let () =
-  let secret = "Key" in
-  let data = "Data" in
-  let iters = 3 in
-  let g = GM.init 50 20 in
-  let encoded = Enc.encode iters data g secret in
-  Printf.printf "Encoded: %s\n" encoded;
-  let decoded = Enc.decode iters encoded g secret in
-  Printf.printf "Decoded: %s\n" decoded

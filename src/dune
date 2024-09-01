@@ -1,3 +1,8 @@
 (library
  (name mod_crypto)
  (modules mod_crypto))
+
+(executable
+ (name main)
+ (modules main)
+ (libraries mod_crypto))
