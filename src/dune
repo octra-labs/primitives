@@ -1,0 +1,3 @@
+(library
+ (name mod_crypto)
+ (modules mod_crypto))

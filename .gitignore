@@ -1,0 +1,9 @@
+_build/
+
+*.aux
+*.log
+*.cache
+
+*.swp
+*~
+.DS_Store
