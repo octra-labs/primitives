@@ -1,7 +1,16 @@
 open Printf
+
 let ( >>= ) option f = match option with
   | Some x -> f x
   | None -> None
+
+let log_event event =
+  let timestamp = Unix.time () |> Unix.gmtime in
+  let time_str = Printf.sprintf "[%02d:%02d:%02d]" timestamp.tm_hour timestamp.tm_min timestamp.tm_sec in
+  Printf.printf "%s %s\n%!" time_str event
+
+let log_error error =
+  Printf.printf "[ERROR] %s\n%!" error
 
 module type NODE = sig
   type t
@@ -9,6 +18,7 @@ module type NODE = sig
   val weight : t -> float
   val state_sum : t -> float
   val combine : t -> t -> t
+  val validate : t -> bool
   val identity : t
 end
 
@@ -36,6 +46,13 @@ module Node : NODE = struct
       state = Array.map2 (Array.map2 (+.)) n1.state n2.state;
       links = n1.links @ n2.links }
 
+  let validate n =
+    try
+      let _ = List.fold_left (fun acc (_, w) -> acc +. w) 0.0 n.links in
+      Array.iter (fun row -> ignore (Array.fold_left (+.) 0.0 row)) n.state;
+      true
+    with _ -> false
+
   let identity = { id = 0; attrs = []; state = Array.make_matrix 4 4 0.0; links = [] }
 end
 
@@ -47,6 +64,8 @@ module type GRAPH = sig
   val ids : t -> int list
   val combine : t -> t -> t
   val identity : t
+  val validate : t -> bool
+  val to_string : t -> string
 end
 
 module GraphModule (N : NODE) : GRAPH with type node = N.t = struct
@@ -78,11 +97,53 @@ module GraphModule (N : NODE) : GRAPH with type node = N.t = struct
 
   let combine g1 g2 =
     let nodes = Hashtbl.copy g1.nodes in
-    Hashtbl.iter (fun k v -> Hashtbl.replace nodes k (N.combine v (Hashtbl.find g2.nodes k))) g2.nodes;
+    Hashtbl.iter (fun k v -> 
+      match Hashtbl.find_opt g2.nodes k with
+      | Some v2 -> Hashtbl.replace nodes k (N.combine v v2)
+      | None -> Hashtbl.add nodes k v
+    ) g1.nodes;
     let edges = HS.union g1.edges g2.edges in
     { nodes; edges }
 
   let identity = { nodes = Hashtbl.create 0; edges = HS.empty }
+
+  let validate g =
+    Hashtbl.fold (fun _ node valid ->
+      valid && N.validate node && List.for_all (fun (id, _) -> Hashtbl.mem g.nodes id) node.links
+    ) g.nodes true
+
+  let to_string g =
+    Hashtbl.fold (fun id node acc ->
+      acc ^ Printf.sprintf "Node %d: weight = %.2f, state_sum = %.2f\n" id (N.weight node) (N.state_sum node)
+    ) g.nodes ""
+end
+
+module type STORAGE = sig
+  type t
+  val init : unit -> t
+  val add : t -> string -> string -> unit
+  val fetch : t -> string -> string option
+  val list : t -> string list
+  val validate_key : t -> string -> bool
+end
+
+module InMemoryStorage : STORAGE = struct
+  type t = (string, string) Hashtbl.t
+
+  let init () = Hashtbl.create 100
+
+  let add storage key value =
+    Hashtbl.replace storage key value;
+    log_event (Printf.sprintf "Added entry with key: %s" key)
+
+  let fetch storage key =
+    Hashtbl.find_opt storage key
+
+  let list storage =
+    Hashtbl.fold (fun k _ acc -> k :: acc) storage []
+
+  let validate_key storage key =
+    Hashtbl.mem storage key
 end
 
 module Encrypt (G : GRAPH with type node = Node.t) = struct
@@ -157,3 +218,4 @@ end
 
 module GM = GraphModule(Node)
 module Enc = Encrypt(GM)
+module Storage = InMemoryStorage
