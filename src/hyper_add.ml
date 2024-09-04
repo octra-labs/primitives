@@ -2,7 +2,7 @@ module KeyHandler = struct
   open Z
 
   type key = { pub_key: Z.t; priv_key: Z.t }
-
+  
   let generate_key_pair () =
     let bit_size = Z.of_int 256 in
     let random_state = Random.State.make_self_init () in
@@ -22,13 +22,15 @@ module KeyHandler = struct
 end
 
 module NoiseHandler = struct
-  type t = { h : float; sigma : float; frequency: float }
+  type t = { level : float; intensity : float; rate: float }
 
-  let create h sigma frequency = { h; sigma; frequency }
+  let create level intensity rate = { level; intensity; rate }
 
-  let generate { h; sigma; frequency } x =
-    let noise = sigma *. (x ** h) *. sin (frequency *. Float.pi *. x) in
-    Z.add (Z.of_float (abs_float noise)) (Z.of_int (Random.int 20 + 5))
+  let generate { level; intensity; rate } x =
+    let noise_effect = intensity *. (x ** level) *. sin (rate *. Float.pi *. x) in
+    let generated_noise = Z.add (Z.of_float (abs_float noise_effect)) (Z.of_int (Random.int 20 + 5)) in
+    Printf.printf "Generated noise: %s\n" (Z.to_string generated_noise);
+    generated_noise
 end
 
 module TransitionState = struct
@@ -89,10 +91,12 @@ module H_Graph = struct
   let add_node g enc_data noise_lvl state =
     let new_id = Z.add (Z.of_int (List.length g.nodes)) Z.one in
     let new_node = { id = new_id; enc_data; noise_lvl; state } in
+    Printf.printf "Adding node with ID: %s\n" (Z.to_string new_id);
     { g with nodes = new_node :: g.nodes }
 
   let add_edge g nodes op control_vector =
     let new_edge = { nodes; op; control_vector } in
+    Printf.printf "Adding edge with operation: %s, control vector: %s\n" op (Z.to_string control_vector);
     { g with edges = new_edge :: g.edges }
 
   let adjust_noise noise r =
@@ -100,7 +104,9 @@ module H_Graph = struct
     let quad_effect = Z.mul (Z.pow r_z 2) (Z.div (Z.pow noise 2) (Z.pow r_z 2)) in
     let cubic_effect = Z.mul (Z.pow r_z 4) (Z.div (Z.pow noise 3) (Z.pow r_z 3)) in
     let adjusted_noise = Z.sub noise (Z.add quad_effect cubic_effect) in
-    if Z.lt adjusted_noise Z.zero then Z.zero else adjusted_noise
+    let final_noise = if Z.lt adjusted_noise Z.zero then Z.zero else adjusted_noise in
+    Printf.printf "Adjusting noise: initial = %s, adjusted = %s\n" (Z.to_string noise) (Z.to_string final_noise);
+    final_noise
 
   let evaluate_noise g r =
     let r_z = Z.of_int r in
@@ -109,12 +115,15 @@ module H_Graph = struct
     let quad_effect = Z.mul (Z.pow r_z 2) (Z.div noise_sq_sum (Z.pow r_z 2)) in
     let cub_effect = Z.mul (Z.pow r_z 4) (Z.div noise_cub_sum (Z.pow r_z 3)) in
     let inter_effect = Z.mul (Z.pow r_z 6) (Z.div noise_sq_sum (Z.pow r_z 4)) in
-    Z.add (Z.add quad_effect cub_effect) inter_effect
+    let total_effect = Z.add (Z.add quad_effect cub_effect) inter_effect in
+    Printf.printf "Evaluated noise effect: %s\n" (Z.to_string total_effect);
+    total_effect
 
   let is_good_row noise_lvl r =
     let r_z = Z.of_int r in
     let log_r = Z.of_float (log (Z.to_float r_z)) in
     let threshold = Z.div (Z.add (Z.div Z.one r_z) (Z.div Z.one (Z.mul r_z r_z))) log_r in
+    Printf.printf "Noise level: %s, Threshold: %s\n" (Z.to_string noise_lvl) (Z.to_string threshold);
     Z.leq noise_lvl threshold
 
   let evaluate_stability g r =
@@ -124,17 +133,37 @@ module H_Graph = struct
     let noise = NoiseHandler.generate (NoiseHandler.create h sigma frequency) (Random.float 1.0) in
     let enc_value = Z.add (Z.mul (Z.of_int number) key.KeyHandler.pub_key) noise in
     let state = TransitionState.update_new_state (Z.of_int number) noise in
+    Printf.printf "Encrypting number: %d, Encrypted value: %s, Noise: %s\n"
+      number (Z.to_string enc_value) (Z.to_string noise);
     [(enc_value, noise)], state
 
-  let decrypt_number key enc =
+  let decrypt_number key enc is_negative =
     match enc with
     | [(value, noise)] ->
         let dec_value = Z.sub value noise in
+        Printf.printf "Decrypting: value = %s, noise = %s, dec_value = %s\n"
+          (Z.to_string value) (Z.to_string noise) (Z.to_string dec_value);
+        
         if Z.equal dec_value Z.zero then 0
-        else Z.to_int (Z.div dec_value key.KeyHandler.pub_key)
+        else 
+          let div_value = Z.div dec_value key.KeyHandler.pub_key in
+          let remainder = Z.erem dec_value key.KeyHandler.pub_key in
+          let corrected_value = 
+            if Z.gt remainder (Z.div key.KeyHandler.pub_key (Z.of_int 2)) then
+              Z.add div_value Z.one
+            else
+              div_value
+          in
+          let final_value =
+            if is_negative then Z.neg corrected_value
+            else corrected_value
+          in
+          Printf.printf "Dividing decrypted value by public key: dec_value = %s, pub_key = %s, div_value = %s, corrected sign = %d\n"
+            (Z.to_string dec_value) (Z.to_string key.KeyHandler.pub_key) (Z.to_string corrected_value) (if is_negative then -1 else 1);
+          Z.to_int final_value
     | _ -> failwith "Unexpected encrypted format"
 
-  let perform_addition g nodes =
+  let perform_addition g nodes key_pair =
     let node_a = List.hd nodes in
     let node_b = List.hd (List.tl nodes) in
     let new_enc_data = List.map2 (fun (ar, an) (br, bn) ->
@@ -142,16 +171,17 @@ module H_Graph = struct
       let adjusted_noise = adjust_noise combined_noise 100 in
       (Z.add ar br, adjusted_noise)
     ) node_a.enc_data node_b.enc_data in
+
     let new_state = TransitionState.update_state node_a.state node_b.state (Z.of_int 1) (Z.of_int 2) (Z.of_int 1) in
     let control_vector = TransitionState.control_vector node_a.state node_b.state new_state in
     let expected_vector = TransitionState.control_vector node_a.state node_b.state new_state in
     TransitionState.validate_control_vector control_vector expected_vector;
+    
     let new_node = { id = Z.add (Z.of_int (List.length g.nodes)) Z.one; enc_data = new_enc_data; noise_lvl = node_a.noise_lvl; state = new_state } in
     let g = { g with nodes = new_node :: g.nodes } in
-    add_edge g [node_a; node_b] "add" control_vector
-
-  let perform_operation g op nodes =
-    match op with
-    | "add" -> perform_addition g nodes
-    | _ -> failwith "Unsupported operation"
+    let _ = add_edge g [node_a; node_b] "add" control_vector in
+    
+    let dec_sum = decrypt_number key_pair new_node.enc_data false in
+    dec_sum
 end
+
